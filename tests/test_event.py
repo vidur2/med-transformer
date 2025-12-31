@@ -10,7 +10,7 @@ from event_classifier import EventTransformerClassifier
 
 
 class TestDataPoint(DataPoint):
-    def __init__(self, category: int, count: int, is_active: bool, description: str):
+    def __init__(self, category: str, count: int, is_active: bool, description: str):
         super().__init__()
         self.category = Category(category)
         self.count = count
@@ -25,21 +25,21 @@ def test_event_tensor_consistency():
     """Test that Event produces consistent tensor dimensions regardless of text length."""
     # Test with different text inputs to ensure consistent dimensions
     test_data_1 = TestDataPoint(
-        category=1,
+        category="diagnosis",
         count=42,
         is_active=True,
         description="Short text"
     )
     
     test_data_2 = TestDataPoint(
-        category=2,
+        category="treatment",
         count=100,
         is_active=False,
         description="This is a much longer description with many more words to test embedding consistency"
     )
     
     test_data_3 = TestDataPoint(
-        category=3,
+        category="medication",
         count=0,
         is_active=True,
         description="Another different length text input for testing purposes and verification"
