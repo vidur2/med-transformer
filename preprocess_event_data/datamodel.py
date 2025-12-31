@@ -1,5 +1,6 @@
 from abstract import DataPoint, Category
 from json import loads
+from typing import List
 
 
 
