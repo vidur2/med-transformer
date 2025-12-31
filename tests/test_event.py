@@ -1,10 +1,12 @@
 import sys
 import os
 sys.path.insert(0, 'preprocess_event_data')
+sys.path.insert(0, 'model')
 
 import torch
 from abstract import DataPoint, Category
 from proc_json import Event
+from event_classifier import EventTransformerClassifier
 
 
 class TestDataPoint(DataPoint):
@@ -70,5 +72,60 @@ def test_event_tensor_consistency():
     print(f"✓ Breakdown: 3 numeric features + 384 embedding features")
 
 
+def test_model_examples():
+    """Test various usage patterns of EventTransformerClassifier."""
+    # Example usage
+    batch_size = 4
+    seq_len = 10
+    input_dim = 387
+    auxiliary_data_dim = 64
+    
+    # Create model with auxiliary data dimension
+    model = EventTransformerClassifier(auxiliary_data_dim=auxiliary_data_dim)
+    
+    # Example 1: Single events with auxiliary data
+    print("Example 1: Single events with auxiliary data")
+    event_tensor = torch.randn(batch_size, input_dim)  # Output from Event.to_tensor()
+    auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
+    
+    # Prepare input using class method
+    x = EventTransformerClassifier.prepare_input(event_tensor, auxiliary_data)
+    print(f"  Event tensor shape: {event_tensor.shape}")
+    print(f"  Auxiliary data shape: {auxiliary_data.shape}")
+    print(f"  Prepared input shape: {x.shape}")
+    
+    output = model(x)
+    print(f"  Output shape: {output.shape}\n")
+    
+    # Example 2: Sequences of events with auxiliary data
+    print("Example 2: Sequences of events with auxiliary data")
+    event_sequences = torch.randn(batch_size, seq_len, input_dim)
+    auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
+    
+    x = EventTransformerClassifier.prepare_input(event_sequences, auxiliary_data)
+    print(f"  Event sequences shape: {event_sequences.shape}")
+    print(f"  Auxiliary data shape: {auxiliary_data.shape}")
+    print(f"  Prepared input shape: {x.shape}")
+    
+    output = model(x)
+    print(f"  Output shape: {output.shape}\n")
+    
+    # Example 3: Single auxiliary data broadcasted to batch
+    print("Example 3: Single auxiliary data (1, N) broadcasted to batch")
+    event_sequences = torch.randn(batch_size, seq_len, input_dim)
+    auxiliary_data_single = torch.randn(1, auxiliary_data_dim)  # Shape (1, N)
+    
+    x = EventTransformerClassifier.prepare_input(event_sequences, auxiliary_data_single)
+    print(f"  Event sequences shape: {event_sequences.shape}")
+    print(f"  Auxiliary data shape: {auxiliary_data_single.shape}")
+    print(f"  Prepared input shape: {x.shape}")
+    
+    output = model(x)
+    print(f"  Output shape: {output.shape}")
+    print(f"\n✓ Model created successfully!")
+
+
 if __name__ == '__main__':
     test_event_tensor_consistency()
+    print("\n" + "="*50 + "\n")
+    test_model_examples()
