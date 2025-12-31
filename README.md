@@ -13,7 +13,7 @@ The project contains a core module that:
 ## Project Structure
 
 ```
-mother/
+med-transformer/
 ├── preprocess_event_data/
 │   ├── abstract.py          # Base classes (DataPoint, Category)
 │   ├── proc_json.py         # Event processing class
