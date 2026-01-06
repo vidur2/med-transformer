@@ -78,11 +78,11 @@ def test_backprop_with_auxiliary_data():
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     
     # Prepare input
-    x = EventTransformerClassifier.prepare_input(event_tensor, auxiliary_data)
+    x = EventTransformerClassifier.prepare_input(event_tensor)
     x.requires_grad = True
     
     # Forward pass
-    output = model(x)
+    output = model(x, auxiliary_data=auxiliary_data)
     
     # Create dummy target
     target = torch.randint(0, 800, (batch_size,))

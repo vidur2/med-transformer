@@ -89,12 +89,12 @@ def test_model_examples():
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     
     # Prepare input using class method
-    x = EventTransformerClassifier.prepare_input(event_tensor, auxiliary_data)
+    x = EventTransformerClassifier.prepare_input(event_tensor)
     print(f"  Event tensor shape: {event_tensor.shape}")
     print(f"  Auxiliary data shape: {auxiliary_data.shape}")
     print(f"  Prepared input shape: {x.shape}")
     
-    output = model(x)
+    output = model(x, auxiliary_data=auxiliary_data)
     print(f"  Output shape: {output.shape}\n")
     
     # Example 2: Sequences of events with auxiliary data
@@ -102,12 +102,12 @@ def test_model_examples():
     event_sequences = torch.randn(batch_size, seq_len, input_dim)
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     
-    x = EventTransformerClassifier.prepare_input(event_sequences, auxiliary_data)
+    x = EventTransformerClassifier.prepare_input(event_sequences)
     print(f"  Event sequences shape: {event_sequences.shape}")
     print(f"  Auxiliary data shape: {auxiliary_data.shape}")
     print(f"  Prepared input shape: {x.shape}")
     
-    output = model(x)
+    output = model(x, auxiliary_data=auxiliary_data)
     print(f"  Output shape: {output.shape}\n")
     
     # Example 3: Single auxiliary data broadcasted to batch
@@ -115,12 +115,12 @@ def test_model_examples():
     event_sequences = torch.randn(batch_size, seq_len, input_dim)
     auxiliary_data_single = torch.randn(1, auxiliary_data_dim)  # Shape (1, N)
     
-    x = EventTransformerClassifier.prepare_input(event_sequences, auxiliary_data_single)
+    x = EventTransformerClassifier.prepare_input(event_sequences)
     print(f"  Event sequences shape: {event_sequences.shape}")
     print(f"  Auxiliary data shape: {auxiliary_data_single.shape}")
     print(f"  Prepared input shape: {x.shape}")
     
-    output = model(x)
+    output = model(x, auxiliary_data=auxiliary_data_single)
     print(f"  Output shape: {output.shape}")
     print(f"\n✓ Model created successfully!")
 

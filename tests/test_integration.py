@@ -57,13 +57,13 @@ def test_single_datapoint_inference():
     auxiliary_data = torch.randn(1, auxiliary_data_dim)
     
     # Prepare input
-    x = EventTransformerClassifier.prepare_input(event_tensor, auxiliary_data)
+    x = EventTransformerClassifier.prepare_input(event_tensor)
     print(f"Model input shape: {x.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x)
+        output = model(x, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted class: {output.argmax(dim=1).item()}")
@@ -118,13 +118,13 @@ def test_sequence_datapoint_inference():
     auxiliary_data = torch.randn(1, auxiliary_data_dim)
     
     # Prepare input
-    x = EventTransformerClassifier.prepare_input(sequence_tensor, auxiliary_data)
+    x = EventTransformerClassifier.prepare_input(sequence_tensor)
     print(f"Model input shape: {x.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x)
+        output = model(x, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted class: {output.argmax(dim=1).item()}")
@@ -174,13 +174,13 @@ def test_batch_datapoint_inference():
     print(f"Auxiliary data shape: {auxiliary_data.shape}")
     
     # Prepare input
-    x = EventTransformerClassifier.prepare_input(batch_tensor, auxiliary_data)
+    x = EventTransformerClassifier.prepare_input(batch_tensor)
     print(f"Model input shape: {x.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x)
+        output = model(x, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted classes: {output.argmax(dim=1).tolist()}")
@@ -226,13 +226,13 @@ def test_batch_sequence_inference():
     print(f"Auxiliary data shape: {auxiliary_data.shape}")
     
     # Prepare input
-    x = EventTransformerClassifier.prepare_input(batch_tensor, auxiliary_data)
+    x = EventTransformerClassifier.prepare_input(batch_tensor)
     print(f"Model input shape: {x.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x)
+        output = model(x, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted classes: {output.argmax(dim=1).tolist()}")

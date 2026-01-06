@@ -1,5 +1,28 @@
 import torch
 import torch.nn as nn
+import math
+
+
+class PositionalEncoding(nn.Module):
+    """Positional encoding for transformer."""
+    def __init__(self, d_model: int, max_len: int = 5000, dropout: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+    
+    def forward(self, x):
+        """Add positional encoding to input.
+        Args:
+            x: Tensor of shape (batch_size, seq_len, d_model)
+        """
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
 
 
 class EventTransformerClassifier(nn.Module):
@@ -45,6 +68,9 @@ class EventTransformerClassifier(nn.Module):
         # Projection layer to map input_dim to hidden_dim
         self.input_projection = nn.Linear(input_dim, hidden_dim)
         
+        # Positional encoding for events
+        self.pos_encoder = PositionalEncoding(hidden_dim, dropout=dropout)
+        
         # Transformer encoder for main events
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -61,6 +87,7 @@ class EventTransformerClassifier(nn.Module):
         # Procedure transformer (if procedure_dim > 0)
         if procedure_dim > 0:
             self.procedure_projection = nn.Linear(procedure_dim, hidden_dim)
+            self.procedure_pos_encoder = PositionalEncoding(hidden_dim, dropout=dropout)
             procedure_encoder_layer = nn.TransformerEncoderLayer(
                 d_model=hidden_dim,
                 nhead=num_heads,
@@ -75,7 +102,7 @@ class EventTransformerClassifier(nn.Module):
         
         # MLP classifier head
         # Input dimension includes event transformer output + procedure transformer output + auxiliary data
-        mlp_input_dim = hidden_dim + (auxiliary_data_dim * input_dim)
+        mlp_input_dim = hidden_dim + auxiliary_data_dim
         if procedure_dim > 0:
             mlp_input_dim += hidden_dim
         
@@ -86,109 +113,99 @@ class EventTransformerClassifier(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, num_classes),
-            nn.Softmax()
+            nn.Linear(hidden_dim // 2, num_classes)
         )
     
     @classmethod
     def prepare_input(cls, event_tensor: torch.Tensor, auxiliary_data: torch.Tensor = None) -> torch.Tensor:
         """
-        Prepare input for the forward method by concatenating event tensor and auxiliary data.
+        Prepare input for the forward method.
         
         Args:
             event_tensor: Output from Event.to_tensor() of shape (batch_size, input_dim)
                          or batch of events of shape (batch_size, seq_len, input_dim)
-            auxiliary_data: Optional auxiliary data tensor of shape (batch_size, auxiliary_data_dim)
-                                   or (1, auxiliary_data_dim) which will be broadcasted to batch_size
+            auxiliary_data: Not used anymore - auxiliary data should be passed directly to forward()
         
         Returns:
-            Concatenated tensor suitable for forward() of shape (batch_size, seq_len + auxiliary_data_dim, input_dim)
-            or (batch_size, 1 + auxiliary_data_dim, input_dim) if event_tensor is 2D
+            Event tensor of shape (batch_size, seq_len, input_dim)
         """
         # Ensure event_tensor is 3D (batch_size, seq_len, input_dim)
         if event_tensor.dim() == 2:
             # Single event per batch: (batch_size, input_dim) -> (batch_size, 1, input_dim)
             event_tensor = event_tensor.unsqueeze(1)
         
-        if auxiliary_data is None:
-            return event_tensor
-        
-        batch_size, seq_len, input_dim = event_tensor.shape
-        
-        if auxiliary_data.dim() == 1:
-            # Single auxiliary data: (auxiliary_data_dim,) -> (1, auxiliary_data_dim)
-            auxiliary_data = auxiliary_data.unsqueeze(0)
-        
-        # If auxiliary_data has batch_size of 1, broadcast it to match event_tensor's batch_size
-        if auxiliary_data.size(0) == 1 and batch_size > 1:
-            auxiliary_data = auxiliary_data.expand(batch_size, -1)
-        
-        # auxiliary_data is now (batch_size, auxiliary_data_dim)
-        # Reshape to (batch_size, auxiliary_data_dim, 1) and pad to input_dim
-        auxiliary_data = auxiliary_data.unsqueeze(2)  # (batch_size, auxiliary_data_dim, 1)
-        
-        # Pad auxiliary data to match input_dim
-        # Use padding to extend from 1 to input_dim
-        auxiliary_data = torch.nn.functional.pad(auxiliary_data, (0, input_dim - 1))  # (batch_size, auxiliary_data_dim, input_dim)
-        
-        # Concatenate along sequence dimension
-        # event_tensor: (batch_size, seq_len, input_dim)
-        # auxiliary_data: (batch_size, auxiliary_data_dim, input_dim)
-        return torch.cat([event_tensor, auxiliary_data], dim=1)
+        return event_tensor
     
-    def forward(self, x, procedure_x=None) -> torch.Tensor:
+    def forward(self, x, procedure_x=None, auxiliary_data=None, src_key_padding_mask=None, procedure_padding_mask=None) -> torch.Tensor:
         """
         Forward pass of the model.
         
         Args:
-            x: Input tensor of shape (batch_size, seq_len + auxiliary_data_dim, input_dim) where:
-               - x[:, :-auxiliary_data_dim, :] contains event vectors from Event.to_tensor()
-               - x[:, -auxiliary_data_dim:, :] contains auxiliary data (if auxiliary_data_dim > 0)
+            x: Input tensor of shape (batch_size, seq_len, input_dim) containing event vectors
             procedure_x: Optional procedure tensor of shape (batch_size, proc_seq_len, procedure_dim)
+            auxiliary_data: Optional auxiliary data of shape (batch_size, auxiliary_data_dim)
+            src_key_padding_mask: Optional mask of shape (batch_size, seq_len) where True indicates padding
+            procedure_padding_mask: Optional mask of shape (batch_size, proc_seq_len) where True indicates padding
         
         Returns:
             Output logits of shape (batch_size, num_classes)
         """
-        # Extract auxiliary data if it exists
-        auxiliary_data = None
-        if self.auxiliary_data_dim > 0:
-            # auxiliary_data shape: (batch_size, auxiliary_data_dim, input_dim)
-            auxiliary_data = x[:, -self.auxiliary_data_dim:, :]
-            # Flatten auxiliary data: (batch_size, auxiliary_data_dim * input_dim)
-            auxiliary_data = auxiliary_data.reshape(x.size(0), -1)
-            # Remove auxiliary data from x
-            x = x[:, :-self.auxiliary_data_dim, :]
-        
         # Project input to hidden dimension
         # x shape: (batch_size, seq_len, input_dim) -> (batch_size, seq_len, hidden_dim)
         x = self.input_projection(x)
         
-        # Pass through transformer encoder
-        # x shape: (batch_size, seq_len, hidden_dim)
-        x = self.transformer_encoder(x)
+        # Add positional encoding
+        x = self.pos_encoder(x)
         
-        # Global average pooling over sequence dimension
-        # x shape: (batch_size, seq_len, hidden_dim) -> (batch_size, hidden_dim)
-        x = x.mean(dim=1)
+        # Pass through transformer encoder with padding mask
+        # x shape: (batch_size, seq_len, hidden_dim)
+        x = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask)
+        
+        # Pooling: use last non-padded token if mask provided, otherwise mean pooling
+        if src_key_padding_mask is not None:
+            # Get sequence lengths from mask (count non-padded tokens)
+            seq_lengths = (~src_key_padding_mask).sum(dim=1)  # (batch_size,)
+            # Get last non-padded token for each sequence
+            batch_size = x.size(0)
+            indices = (seq_lengths - 1).clamp(min=0)  # (batch_size,)
+            x = x[torch.arange(batch_size), indices]  # (batch_size, hidden_dim)
+        else:
+            # Global average pooling over sequence dimension
+            x = x.mean(dim=1)  # (batch_size, hidden_dim)
         
         # Process procedures through separate transformer if provided
         if procedure_x is not None and self.procedure_dim > 0:
             # procedure_x shape: (batch_size, proc_seq_len, procedure_dim)
             # Project to hidden dimension
             procedure_x = self.procedure_projection(procedure_x)
-            # Pass through procedure transformer
-            procedure_x = self.procedure_transformer(procedure_x)
-            # Global average pooling
-            procedure_x = procedure_x.mean(dim=1)
+            # Add positional encoding
+            procedure_x = self.procedure_pos_encoder(procedure_x)
+            # Pass through procedure transformer with padding mask
+            procedure_x = self.procedure_transformer(procedure_x, src_key_padding_mask=procedure_padding_mask)
+            
+            # Pooling for procedures
+            if procedure_padding_mask is not None:
+                proc_seq_lengths = (~procedure_padding_mask).sum(dim=1)
+                proc_indices = (proc_seq_lengths - 1).clamp(min=0)
+                procedure_x = procedure_x[torch.arange(batch_size), proc_indices]
+            else:
+                procedure_x = procedure_x.mean(dim=1)
+            
             # Concatenate with main transformer output
             x = torch.cat([x, procedure_x], dim=1)
         
         # Concatenate auxiliary data if provided
         if auxiliary_data is not None:
+            # Ensure auxiliary_data is 2D
+            if auxiliary_data.dim() == 1:
+                auxiliary_data = auxiliary_data.unsqueeze(0)
+            # Broadcast if needed
+            if auxiliary_data.size(0) == 1 and x.size(0) > 1:
+                auxiliary_data = auxiliary_data.expand(x.size(0), -1)
             x = torch.cat([x, auxiliary_data], dim=1)
         
         # Pass through MLP classifier
-        # x shape: (batch_size, hidden_dim + procedure_hidden + auxiliary_data_dim * input_dim) -> (batch_size, num_classes)
+        # x shape: (batch_size, hidden_dim + procedure_hidden + auxiliary_data_dim) -> (batch_size, num_classes)
         logits = self.mlp(x)
         
         return logits
