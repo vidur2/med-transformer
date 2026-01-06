@@ -19,6 +19,7 @@ class EventTransformerClassifier(nn.Module):
         num_heads: int = 8,
         dropout: float = 0.1,
         auxiliary_data_dim: int = 0,
+        procedure_dim: int = 0,
     ):
         """
         Initialize the EventTransformerClassifier.
@@ -31,6 +32,7 @@ class EventTransformerClassifier(nn.Module):
             num_heads: Number of attention heads
             dropout: Dropout rate
             auxiliary_data_dim: Dimension of auxiliary data vector to concatenate with transformer output (default: 0)
+            procedure_dim: Dimension of each procedure vector (default: 0, disabled if 0)
         """
         super().__init__()
         
@@ -38,11 +40,12 @@ class EventTransformerClassifier(nn.Module):
         self.num_classes = num_classes
         self.hidden_dim = hidden_dim
         self.auxiliary_data_dim = auxiliary_data_dim
+        self.procedure_dim = procedure_dim
         
         # Projection layer to map input_dim to hidden_dim
         self.input_projection = nn.Linear(input_dim, hidden_dim)
         
-        # Transformer encoder
+        # Transformer encoder for main events
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=num_heads,
@@ -55,9 +58,27 @@ class EventTransformerClassifier(nn.Module):
             num_layers=num_transformer_layers,
         )
         
+        # Procedure transformer (if procedure_dim > 0)
+        if procedure_dim > 0:
+            self.procedure_projection = nn.Linear(procedure_dim, hidden_dim)
+            procedure_encoder_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=num_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                batch_first=True,
+            )
+            self.procedure_transformer = nn.TransformerEncoder(
+                procedure_encoder_layer,
+                num_layers=num_transformer_layers,
+            )
+        
         # MLP classifier head
-        # Input dimension is hidden_dim + auxiliary_data_dim * input_dim if auxiliary data is provided
+        # Input dimension includes event transformer output + procedure transformer output + auxiliary data
         mlp_input_dim = hidden_dim + (auxiliary_data_dim * input_dim)
+        if procedure_dim > 0:
+            mlp_input_dim += hidden_dim
+        
         self.mlp = nn.Sequential(
             nn.Linear(mlp_input_dim, hidden_dim),
             nn.ReLU(),
@@ -115,7 +136,7 @@ class EventTransformerClassifier(nn.Module):
         # auxiliary_data: (batch_size, auxiliary_data_dim, input_dim)
         return torch.cat([event_tensor, auxiliary_data], dim=1)
     
-    def forward(self, x) -> torch.Tensor:
+    def forward(self, x, procedure_x=None) -> torch.Tensor:
         """
         Forward pass of the model.
         
@@ -123,6 +144,7 @@ class EventTransformerClassifier(nn.Module):
             x: Input tensor of shape (batch_size, seq_len + auxiliary_data_dim, input_dim) where:
                - x[:, :-auxiliary_data_dim, :] contains event vectors from Event.to_tensor()
                - x[:, -auxiliary_data_dim:, :] contains auxiliary data (if auxiliary_data_dim > 0)
+            procedure_x: Optional procedure tensor of shape (batch_size, proc_seq_len, procedure_dim)
         
         Returns:
             Output logits of shape (batch_size, num_classes)
@@ -149,12 +171,24 @@ class EventTransformerClassifier(nn.Module):
         # x shape: (batch_size, seq_len, hidden_dim) -> (batch_size, hidden_dim)
         x = x.mean(dim=1)
         
+        # Process procedures through separate transformer if provided
+        if procedure_x is not None and self.procedure_dim > 0:
+            # procedure_x shape: (batch_size, proc_seq_len, procedure_dim)
+            # Project to hidden dimension
+            procedure_x = self.procedure_projection(procedure_x)
+            # Pass through procedure transformer
+            procedure_x = self.procedure_transformer(procedure_x)
+            # Global average pooling
+            procedure_x = procedure_x.mean(dim=1)
+            # Concatenate with main transformer output
+            x = torch.cat([x, procedure_x], dim=1)
+        
         # Concatenate auxiliary data if provided
         if auxiliary_data is not None:
             x = torch.cat([x, auxiliary_data], dim=1)
         
         # Pass through MLP classifier
-        # x shape: (batch_size, hidden_dim + auxiliary_data_dim * input_dim) -> (batch_size, num_classes)
+        # x shape: (batch_size, hidden_dim + procedure_hidden + auxiliary_data_dim * input_dim) -> (batch_size, num_classes)
         logits = self.mlp(x)
         
         return logits

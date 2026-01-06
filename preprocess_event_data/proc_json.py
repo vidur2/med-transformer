@@ -29,8 +29,6 @@ class Event:
                 # Convert string to embedding and extend the list
                 embedding = model.encode(info)
                 self.parsed_vec.extend(embedding.tolist())
-            else:
-                raise Exception("Cannot parse unknown data")
     
     def to_tensor(self) -> torch.Tensor:
         """Convert parsed_vec to a PyTorch tensor."""
