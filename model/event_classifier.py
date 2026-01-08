@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import math
+from pathlib import Path
 
 
 class PositionalEncoding(nn.Module):
@@ -27,11 +28,60 @@ class PositionalEncoding(nn.Module):
 
 class EventTransformerClassifier(nn.Module):
     """
-    A transformer-based classifier for event categorization.
+    A transformer-based classifier for per-event sequence labeling.
     
-    Takes sequences of event tensors (from Event.to_tensor()) and classifies them
-    into one of 800 categories using a transformer encoder followed by an MLP.
+    Takes sequences of event tensors (from Event.to_tensor()) and produces
+    classification predictions for each event in the sequence. The model uses
+    a transformer encoder followed by an MLP applied to each timestep.
+    
+    Output shape: (batch_size, seq_len, num_classes)
+    
+    This enables sequence labeling tasks where each event receives its own
+    multi-label classification, rather than a single prediction for the entire sequence.
     """
+    
+    @classmethod
+    def from_shape_file(cls, shape_file: str, num_classes: int = 800, hidden_dim: int = 512, 
+                       auxiliary_data_dim: int = 0, **kwargs):
+        """
+        Create model with dimensions automatically inferred from shape.json.
+        
+        Args:
+            shape_file: Path to shape.json metadata file
+            num_classes: Number of output classes per event (default: 800)
+            hidden_dim: Hidden dimension for transformer (default: 512)
+            auxiliary_data_dim: Dimension of auxiliary data (default: 0)
+            **kwargs: Additional model parameters (num_heads, num_transformer_layers, dropout)
+            
+        Returns:
+            EventTransformerClassifier instance configured from shape metadata
+            
+        Example:
+            >>> model = EventTransformerClassifier.from_shape_file('shape.json', num_classes=800)
+            >>> # Model automatically has input_dim=76, procedure_dim=384
+            >>> # Produces per-event predictions: (batch_size, seq_len, 800)
+        """
+        try:
+            from model.shape_utils import extract_dimensions
+        except ImportError:
+            # Try relative import if running from different location
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from shape_utils import extract_dimensions
+        
+        # Extract dimensions from shape file
+        input_dim, procedure_dim = extract_dimensions(shape_file)
+        
+        # Create model with extracted dimensions
+        return cls(
+            input_dim=input_dim,
+            procedure_dim=procedure_dim,
+            num_classes=num_classes,
+            hidden_dim=hidden_dim,
+            auxiliary_data_dim=auxiliary_data_dim,
+            **kwargs
+        )
     
     def __init__(
         self,
@@ -49,13 +99,17 @@ class EventTransformerClassifier(nn.Module):
         
         Args:
             input_dim: Dimension of each event vector (default: 387 from Event.to_tensor())
-            num_classes: Number of output classes (default: 800)
+            num_classes: Number of output classes per event (default: 800)
             hidden_dim: Hidden dimension for transformer and MLP
             num_transformer_layers: Number of transformer encoder layers
             num_heads: Number of attention heads
             dropout: Dropout rate
             auxiliary_data_dim: Dimension of auxiliary data vector to concatenate with transformer output (default: 0)
             procedure_dim: Dimension of each procedure vector (default: 0, disabled if 0)
+            
+        Note:
+            The model produces per-event predictions with shape (batch_size, seq_len, num_classes).
+            This differs from sequence classification which produces (batch_size, num_classes).
         """
         super().__init__()
         
@@ -65,8 +119,10 @@ class EventTransformerClassifier(nn.Module):
         self.auxiliary_data_dim = auxiliary_data_dim
         self.procedure_dim = procedure_dim
         
-        # Projection layer to map input_dim to hidden_dim
-        self.input_projection = nn.Linear(input_dim, hidden_dim)
+        # Projection layer to map (input_dim * 2) to hidden_dim
+        # Input is concatenated: [feature_values, availability_mask]
+        # This allows the model to learn different behaviors for missing features
+        self.input_projection = nn.Linear(input_dim * 2, hidden_dim)
         
         # Positional encoding for events
         self.pos_encoder = PositionalEncoding(hidden_dim, dropout=dropout)
@@ -116,27 +172,136 @@ class EventTransformerClassifier(nn.Module):
             nn.Linear(hidden_dim // 2, num_classes)
         )
     
-    @classmethod
-    def prepare_input(cls, event_tensor: torch.Tensor, auxiliary_data: torch.Tensor = None) -> torch.Tensor:
+    @staticmethod
+    def make_feature_mask(x: torch.Tensor, missing_feat_idx: torch.Tensor = None, text_feature_ranges: dict = None) -> torch.Tensor:
         """
-        Prepare input for the forward method.
+        Create feature availability mask for the last timestep.
         
         Args:
-            event_tensor: Output from Event.to_tensor() of shape (batch_size, input_dim)
-                         or batch of events of shape (batch_size, seq_len, input_dim)
-            auxiliary_data: Not used anymore - auxiliary data should be passed directly to forward()
+            x: Input tensor of shape (batch_size, seq_len, input_dim)
+            missing_feat_idx: Tensor of feature indices to mask in the last timestep.
+                             If None, all features are available (mask = all 1s)
+            text_feature_ranges: Optional dict mapping text feature names to their index ranges.
+                                Format: {'feature_name': (start_idx, end_idx)}
+                                When a text feature is masked, all indices in its range are masked.
+                                Example: {'diagnosis': (50, 70)} means indices 50-69 are diagnosis text embedding
         
         Returns:
-            Event tensor of shape (batch_size, seq_len, input_dim)
+            Boolean mask of shape (batch_size, seq_len, input_dim) where:
+            - 1.0 indicates feature is available
+            - 0.0 indicates feature is missing
+            
+        Note: Only the last timestep (t = seq_len - 1) will have masked features.
+              All other timesteps have all features available.
+              
+              For text features, the entire extended/repeated embedding range is masked
+              when the feature index falls within any text feature range.
         """
-        # Ensure event_tensor is 3D (batch_size, seq_len, input_dim)
-        if event_tensor.dim() == 2:
-            # Single event per batch: (batch_size, input_dim) -> (batch_size, 1, input_dim)
-            event_tensor = event_tensor.unsqueeze(1)
+        batch_size, seq_len, input_dim = x.shape
         
-        return event_tensor
+        # Start with all features available (mask = 1)
+        mask = torch.ones_like(x)
+        
+        if missing_feat_idx is not None:
+            # Convert to tensor if list
+            if isinstance(missing_feat_idx, list):
+                missing_feat_idx = torch.tensor(missing_feat_idx, device=x.device)
+            
+            # For each missing feature index, determine what to mask
+            for feat_idx in missing_feat_idx:
+                feat_idx_val = feat_idx.item() if isinstance(feat_idx, torch.Tensor) else feat_idx
+                
+                # Check if this index belongs to a text feature range
+                is_text_feature = False
+                if text_feature_ranges is not None:
+                    for feature_name, (start_idx, end_idx) in text_feature_ranges.items():
+                        if start_idx <= feat_idx_val < end_idx:
+                            # This is part of a text feature - mask the entire range
+                            mask[:, -1, start_idx:end_idx] = 0.0
+                            is_text_feature = True
+                            break
+                
+                # If not a text feature, mask just this single index
+                if not is_text_feature:
+                    mask[:, -1, feat_idx_val] = 0.0
+        
+        return mask
     
-    def forward(self, x, procedure_x=None, auxiliary_data=None, src_key_padding_mask=None, procedure_padding_mask=None) -> torch.Tensor:
+    @staticmethod
+    def apply_feature_missingness(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Apply feature missingness to input and augment with availability mask.
+        
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, input_dim)
+            mask: Availability mask of shape (batch_size, seq_len, input_dim)
+                  where 1 = available, 0 = missing
+        
+        Returns:
+            Augmented tensor of shape (batch_size, seq_len, input_dim * 2)
+            where the first half is zero-filled features and second half is the mask.
+            
+        Implementation:
+            x_filled = x * mask  # Zero out missing features
+            x_aug = concat([x_filled, mask], dim=-1)  # Concatenate features and mask
+            
+        Why zero-fill:
+            - Prevents information leakage from unavailable features
+            - Model learns from the mask which features are present/absent
+            - Training uses same logic to avoid train/test mismatch
+        """
+        # Zero out missing features to prevent information leakage
+        x_filled = x * mask
+        
+        # Concatenate filled features with availability mask
+        # Shape: (batch_size, seq_len, input_dim * 2)
+        x_aug = torch.cat([x_filled, mask], dim=-1)
+        
+        return x_aug
+    
+    @staticmethod
+    def create_padding_mask(sequences: torch.Tensor, pad_value: float = 0.0) -> torch.Tensor:
+        """
+        Create padding mask from sequences.
+        
+        Args:
+            sequences: Input tensor of shape (batch_size, seq_len, *) or (batch_size, seq_len)
+            pad_value: Value used for padding (default: 0.0)
+        
+        Returns:
+            Boolean mask of shape (batch_size, seq_len) where True indicates padding
+        """
+        # Check if all features in a position are equal to pad_value
+        if sequences.dim() == 3:
+            # (batch_size, seq_len, feature_dim) -> check if all features are pad_value
+            mask = (sequences == pad_value).all(dim=-1)
+        else:
+            # (batch_size, seq_len) -> direct comparison
+            mask = (sequences == pad_value)
+        return mask
+    
+    @staticmethod
+    def create_padding_mask_from_lengths(seq_lengths: torch.Tensor, max_len: int) -> torch.Tensor:
+        """
+        Create padding mask from sequence lengths.
+        
+        Args:
+            seq_lengths: Tensor of shape (batch_size,) containing actual sequence lengths
+            max_len: Maximum sequence length (padded length)
+        
+        Returns:
+            Boolean mask of shape (batch_size, max_len) where True indicates padding
+        """
+        batch_size = seq_lengths.size(0)
+        # Create position indices: (1, max_len)
+        positions = torch.arange(max_len, device=seq_lengths.device).unsqueeze(0)
+        # Expand seq_lengths: (batch_size, 1)
+        seq_lengths = seq_lengths.unsqueeze(1)
+        # mask[i, j] = True if j >= seq_lengths[i]
+        mask = positions >= seq_lengths
+        return mask
+    
+    def forward(self, x, procedure_x=None, auxiliary_data=None, src_key_padding_mask=None, procedure_padding_mask=None, missing_feat_idx=None, text_feature_ranges=None, feature_mask=None) -> torch.Tensor:
         """
         Forward pass of the model.
         
@@ -146,12 +311,39 @@ class EventTransformerClassifier(nn.Module):
             auxiliary_data: Optional auxiliary data of shape (batch_size, auxiliary_data_dim)
             src_key_padding_mask: Optional mask of shape (batch_size, seq_len) where True indicates padding
             procedure_padding_mask: Optional mask of shape (batch_size, proc_seq_len) where True indicates padding
+            missing_feat_idx: Optional tensor/list of feature indices to mask in the last timestep.
+                            If None, all features are assumed available.
+            text_feature_ranges: Optional dict mapping text feature names to (start_idx, end_idx) tuples.
+                               When a feature index in missing_feat_idx falls in a text range,
+                               the entire range is masked.
+            feature_mask: Optional pre-computed feature mask of shape (batch_size, seq_len, input_dim).
+                         If provided, overrides missing_feat_idx and text_feature_ranges.
         
         Returns:
-            Output logits of shape (batch_size, num_classes)
+            Output logits of shape (batch_size, seq_len, num_classes)
+            
+            Each timestep receives its own classification prediction, enabling
+            sequence labeling tasks. When computing loss, remember to mask out
+            padded positions using src_key_padding_mask.
+            
+        Example:
+            >>> model = EventTransformerClassifier(input_dim=76, num_classes=800)
+            >>> x = torch.randn(4, 10, 76)  # batch_size=4, seq_len=10
+            >>> 
+            >>> # Define text feature ranges (e.g., diagnosis text embedded at indices 50-70)
+            >>> text_ranges = {'diagnosis': (50, 70), 'procedure_desc': (70, 90)}
+            >>> 
+            >>> # Mask feature 55 (part of diagnosis text) - entire range 50-70 gets masked
+            >>> output = model(x, missing_feat_idx=[55], text_feature_ranges=text_ranges)
         """
-        # Project input to hidden dimension
-        # x shape: (batch_size, seq_len, input_dim) -> (batch_size, seq_len, hidden_dim)
+        # Handle feature-level missingness
+        # Create availability mask and augment input with missingness indicators
+        if feature_mask is None:
+            feature_mask = self.make_feature_mask(x, missing_feat_idx, text_feature_ranges)
+        x = self.apply_feature_missingness(x, feature_mask)
+        
+        # Project augmented input to hidden dimension
+        # x shape: (batch_size, seq_len, input_dim * 2) -> (batch_size, seq_len, hidden_dim)
         x = self.input_projection(x)
         
         # Add positional encoding
@@ -160,18 +352,6 @@ class EventTransformerClassifier(nn.Module):
         # Pass through transformer encoder with padding mask
         # x shape: (batch_size, seq_len, hidden_dim)
         x = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask)
-        
-        # Pooling: use last non-padded token if mask provided, otherwise mean pooling
-        if src_key_padding_mask is not None:
-            # Get sequence lengths from mask (count non-padded tokens)
-            seq_lengths = (~src_key_padding_mask).sum(dim=1)  # (batch_size,)
-            # Get last non-padded token for each sequence
-            batch_size = x.size(0)
-            indices = (seq_lengths - 1).clamp(min=0)  # (batch_size,)
-            x = x[torch.arange(batch_size), indices]  # (batch_size, hidden_dim)
-        else:
-            # Global average pooling over sequence dimension
-            x = x.mean(dim=1)  # (batch_size, hidden_dim)
         
         # Process procedures through separate transformer if provided
         if procedure_x is not None and self.procedure_dim > 0:
@@ -183,16 +363,22 @@ class EventTransformerClassifier(nn.Module):
             # Pass through procedure transformer with padding mask
             procedure_x = self.procedure_transformer(procedure_x, src_key_padding_mask=procedure_padding_mask)
             
-            # Pooling for procedures
+            # Pool procedures to single vector per sample
             if procedure_padding_mask is not None:
                 proc_seq_lengths = (~procedure_padding_mask).sum(dim=1)
                 proc_indices = (proc_seq_lengths - 1).clamp(min=0)
-                procedure_x = procedure_x[torch.arange(batch_size), proc_indices]
+                batch_size = procedure_x.size(0)
+                procedure_pooled = procedure_x[torch.arange(batch_size), proc_indices]  # (batch_size, hidden_dim)
             else:
-                procedure_x = procedure_x.mean(dim=1)
+                procedure_pooled = procedure_x.mean(dim=1)  # (batch_size, hidden_dim)
             
-            # Concatenate with main transformer output
-            x = torch.cat([x, procedure_x], dim=1)
+            # Expand procedure representation to match event sequence length
+            # (batch_size, hidden_dim) -> (batch_size, seq_len, hidden_dim)
+            seq_len = x.size(1)
+            procedure_expanded = procedure_pooled.unsqueeze(1).expand(-1, seq_len, -1)
+            
+            # Concatenate with main transformer output at each timestep
+            x = torch.cat([x, procedure_expanded], dim=-1)  # (batch_size, seq_len, hidden_dim*2)
         
         # Concatenate auxiliary data if provided
         if auxiliary_data is not None:
@@ -202,10 +388,21 @@ class EventTransformerClassifier(nn.Module):
             # Broadcast if needed
             if auxiliary_data.size(0) == 1 and x.size(0) > 1:
                 auxiliary_data = auxiliary_data.expand(x.size(0), -1)
-            x = torch.cat([x, auxiliary_data], dim=1)
+            # Expand to match sequence length
+            seq_len = x.size(1)
+            auxiliary_expanded = auxiliary_data.unsqueeze(1).expand(-1, seq_len, -1)
+            x = torch.cat([x, auxiliary_expanded], dim=-1)
         
-        # Pass through MLP classifier
-        # x shape: (batch_size, hidden_dim + procedure_hidden + auxiliary_data_dim) -> (batch_size, num_classes)
-        logits = self.mlp(x)
+        # Pass through MLP classifier for each timestep
+        # x shape: (batch_size, seq_len, hidden_dim + procedure_hidden + auxiliary_data_dim)
+        # Reshape for MLP: (batch_size * seq_len, feature_dim)
+        batch_size, seq_len, feature_dim = x.shape
+        x_flat = x.reshape(batch_size * seq_len, feature_dim)
+        
+        # Apply MLP
+        logits_flat = self.mlp(x_flat)  # (batch_size * seq_len, num_classes)
+        
+        # Reshape back to sequence: (batch_size, seq_len, num_classes)
+        logits = logits_flat.reshape(batch_size, seq_len, self.num_classes)
         
         return logits

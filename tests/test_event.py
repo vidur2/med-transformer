@@ -88,8 +88,8 @@ def test_model_examples():
     event_tensor = torch.randn(batch_size, input_dim)  # Output from Event.to_tensor()
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     
-    # Prepare input using class method
-    x = EventTransformerClassifier.prepare_input(event_tensor)
+    # Ensure 3D shape for model input
+    x = event_tensor.unsqueeze(1) if event_tensor.dim() == 2 else event_tensor
     print(f"  Event tensor shape: {event_tensor.shape}")
     print(f"  Auxiliary data shape: {auxiliary_data.shape}")
     print(f"  Prepared input shape: {x.shape}")
@@ -102,7 +102,7 @@ def test_model_examples():
     event_sequences = torch.randn(batch_size, seq_len, input_dim)
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     
-    x = EventTransformerClassifier.prepare_input(event_sequences)
+    x = event_sequences
     print(f"  Event sequences shape: {event_sequences.shape}")
     print(f"  Auxiliary data shape: {auxiliary_data.shape}")
     print(f"  Prepared input shape: {x.shape}")
@@ -115,7 +115,7 @@ def test_model_examples():
     event_sequences = torch.randn(batch_size, seq_len, input_dim)
     auxiliary_data_single = torch.randn(1, auxiliary_data_dim)  # Shape (1, N)
     
-    x = EventTransformerClassifier.prepare_input(event_sequences)
+    x = event_sequences
     print(f"  Event sequences shape: {event_sequences.shape}")
     print(f"  Auxiliary data shape: {auxiliary_data_single.shape}")
     print(f"  Prepared input shape: {x.shape}")

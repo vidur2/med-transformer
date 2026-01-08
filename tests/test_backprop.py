@@ -78,7 +78,7 @@ def test_backprop_with_auxiliary_data():
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     
     # Prepare input
-    x = EventTransformerClassifier.prepare_input(event_tensor)
+    x = event_tensor  # Already 3D: (batch_size, seq_len, input_dim)
     x.requires_grad = True
     
     # Forward pass

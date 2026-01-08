@@ -46,8 +46,9 @@ def test_single_datapoint_inference():
     event_tensor = event.to_tensor()
     print(f"Event tensor shape: {event_tensor.shape}")
     
-    # Add batch dimension for model
+    # Add batch dimension and sequence dimension for model
     event_tensor = event_tensor.unsqueeze(0)  # (1, 387)
+    event_tensor = event_tensor.unsqueeze(1)  # (1, 1, 387)
     
     # Create model
     model = EventTransformerClassifier()
@@ -56,14 +57,12 @@ def test_single_datapoint_inference():
     auxiliary_data_dim = 64
     auxiliary_data = torch.randn(1, auxiliary_data_dim)
     
-    # Prepare input
-    x = EventTransformerClassifier.prepare_input(event_tensor)
-    print(f"Model input shape: {x.shape}")
+    print(f"Model input shape: {event_tensor.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x, auxiliary_data=auxiliary_data)
+        output = model(event_tensor, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted class: {output.argmax(dim=1).item()}")
@@ -117,14 +116,12 @@ def test_sequence_datapoint_inference():
     auxiliary_data_dim = 64
     auxiliary_data = torch.randn(1, auxiliary_data_dim)
     
-    # Prepare input
-    x = EventTransformerClassifier.prepare_input(sequence_tensor)
-    print(f"Model input shape: {x.shape}")
+    print(f"Model input shape: {sequence_tensor.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x, auxiliary_data=auxiliary_data)
+        output = model(sequence_tensor, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted class: {output.argmax(dim=1).item()}")
@@ -163,6 +160,8 @@ def test_batch_datapoint_inference():
     
     # Stack into batch
     batch_tensor = torch.stack(batch_tensors)  # (batch_size, 387)
+    # Add sequence dimension
+    batch_tensor = batch_tensor.unsqueeze(1)  # (batch_size, 1, 387)
     print(f"Batch tensor shape: {batch_tensor.shape}")
     
     # Create model with auxiliary data
@@ -173,14 +172,12 @@ def test_batch_datapoint_inference():
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     print(f"Auxiliary data shape: {auxiliary_data.shape}")
     
-    # Prepare input
-    x = EventTransformerClassifier.prepare_input(batch_tensor)
-    print(f"Model input shape: {x.shape}")
+    print(f"Model input shape: {batch_tensor.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x, auxiliary_data=auxiliary_data)
+        output = model(batch_tensor, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted classes: {output.argmax(dim=1).tolist()}")
@@ -225,14 +222,12 @@ def test_batch_sequence_inference():
     auxiliary_data = torch.randn(batch_size, auxiliary_data_dim)
     print(f"Auxiliary data shape: {auxiliary_data.shape}")
     
-    # Prepare input
-    x = EventTransformerClassifier.prepare_input(batch_tensor)
-    print(f"Model input shape: {x.shape}")
+    print(f"Model input shape: {batch_tensor.shape}")
     
     # Run inference
     model.eval()
     with torch.no_grad():
-        output = model(x, auxiliary_data=auxiliary_data)
+        output = model(batch_tensor, auxiliary_data=auxiliary_data)
     
     print(f"Model output shape: {output.shape}")
     print(f"Predicted classes: {output.argmax(dim=1).tolist()}")
