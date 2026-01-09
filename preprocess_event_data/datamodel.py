@@ -133,4 +133,16 @@ if (__name__ == '__main__'):
                 print(f"    {field_name}: [{start}, {end})")
         else:
             print(f"  {schema_type}: (no text features)")
+    
+    # Serialize TargetCategory mappings
+    target_categories_path = '/Users/vidurmodgil/Desktop/Data/Programming Projects/mother/data/target_categories.json'
+    target_category_data = {
+        'num_categories': len(TargetCategory._categories),
+        'categories': TargetCategory._categories,
+        'category_to_index': {cat: idx for idx, cat in enumerate(TargetCategory._categories)}
+    }
+    with open(target_categories_path, 'w') as f:
+        dump(target_category_data, f, indent=2)
+    
+    print(f"\n✓ Saved {len(TargetCategory._categories)} target categories to {target_categories_path}")
 
