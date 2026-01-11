@@ -71,7 +71,7 @@ class EventDataPoint(DataPoint):
 
 if (__name__ == '__main__'):
     blob = ''
-    with open('/Users/vidurmodgil/Desktop/Data/Programming Projects/mother/data/processed_structured.json') as f:
+    with open('data/processed_structured.json') as f:
         blob = f.read()
     assoc_patid = dict()
     for dp in loads(blob):
@@ -113,14 +113,14 @@ if (__name__ == '__main__'):
         }
     
     # Save to JSON
-    output_path = '/Users/vidurmodgil/Desktop/Data/Programming Projects/mother/data/tensor_data.json'
+    output_path = 'data/tensor_data.json'
     with open(output_path, 'w') as f:
         dump(output_data, f, indent=2)
     
     print(f"Saved tensor data for {len(output_data)} patients to {output_path}")
     
     # Export text feature ranges for use in training
-    text_ranges_path = '/Users/vidurmodgil/Desktop/Data/Programming Projects/mother/data/text_ranges.json'
+    text_ranges_path = 'data/text_ranges.json'
     Event.export_text_ranges(text_ranges_path)
     
     # Display detected text feature ranges for each schema
@@ -135,7 +135,7 @@ if (__name__ == '__main__'):
             print(f"  {schema_type}: (no text features)")
     
     # Serialize TargetCategory mappings
-    target_categories_path = '/Users/vidurmodgil/Desktop/Data/Programming Projects/mother/data/target_categories.json'
+    target_categories_path = 'data/target_categories.json'
     target_category_data = {
         'num_categories': len(TargetCategory._categories),
         'categories': TargetCategory._categories,
